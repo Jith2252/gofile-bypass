@@ -3,6 +3,11 @@ import requests
 from telegram import Update
 from telegram.ext import Application, MessageHandler, filters, ContextTypes
 import logging
+import os
+from dotenv import load_dotenv
+
+# Load environment variables from config.env
+load_dotenv('config.env')
 
 # Configure logging
 logging.basicConfig(
@@ -11,18 +16,18 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Configuration
-TELEGRAM_BOT_TOKEN = "7813395754:AAHXlegCoaNZyyZselLKTniZTcwXaMuyTZM"
-SOURCE_CHANNEL_ID = -1002780245823  # Channel A (use @username or -100xxx format)
-TARGET_CHANNEL_ID = -1003744021205  # Channel B (use @username or -100xxx format)
+# Configuration from environment variables
+TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
+SOURCE_CHANNEL_ID = int(os.getenv('SOURCE_CHANNEL_ID'))  # Channel A
+TARGET_CHANNEL_ID = int(os.getenv('TARGET_CHANNEL_ID'))  # Channel B
 
 # VPLink API credentials
-VPLINK_API1_KEY = "556884f698b2fc4270c55310dfebc5483c081200"  # For retrieving destination URL
-VPLINK_API2_KEY = "50cf08b699d0fd0988e27d5c76732c4ff46ab3f6"  # For creating new short URL
+VPLINK_API1_KEY = os.getenv('VPLINK_API1_KEY')  # For retrieving destination URL
+VPLINK_API2_KEY = os.getenv('VPLINK_API2_KEY')  # For creating new short URL
 
 # VPLink API endpoints
-VPLINK_EXPAND_API = "https://vplink.in/api"  # Check vplink documentation for correct endpoint
-VPLINK_SHORTEN_API = "https://vplink.in/api"  # Check vplink documentation for correct endpoint
+VPLINK_EXPAND_API = os.getenv('VPLINK_EXPAND_API', 'https://vplink.in/api')
+VPLINK_SHORTEN_API = os.getenv('VPLINK_SHORTEN_API', 'https://vplink.in/api')
 
 
 def extract_vplink_urls(text):
