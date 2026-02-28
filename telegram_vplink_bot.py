@@ -44,7 +44,7 @@ def extract_vplink_urls(text):
 def get_destination_url(short_url, api_key):
     """
     Retrieve the destination URL from vplink short URL
-    VPLink pages contain the destination URL in the HTML, need to parse it
+    Recursively follow through ALL shortener pages until reaching the final destination
     """
     try:
         headers = {
@@ -53,66 +53,101 @@ def get_destination_url(short_url, api_key):
             'Accept-Language': 'en-US,en;q=0.5',
         }
         
-        logger.info(f"Fetching vplink page: {short_url}")
-        response = requests.get(short_url, headers=headers, timeout=20, allow_redirects=True)
+        # Known shortener domains to keep following
+        shortener_domains = ['vplink.in', 'ohcar2022.co.in', 'ohcar', 'bit.ly', 'tinyurl.com', 'shorturl.at', 'clk.sh']
         
-        # Parse the HTML to find the destination URL
-        soup = BeautifulSoup(response.text, 'html.parser')
-        
-        # Method 1: Look for skip button or direct link
-        skip_link = soup.find('a', {'id': 'skip_button'}) or soup.find('a', {'class': 'skip'})
-        if skip_link and skip_link.get('href'):
-            destination = skip_link.get('href')
-            logger.info(f"Found destination in skip button: {destination}")
+        def extract_url(url, depth=0, max_depth=10):
+            """Recursively extract destination URL from shortener pages"""
+            if depth >= max_depth:
+                logger.warning(f"Max depth {max_depth} reached")
+                return url
             
-            # If it's another vplink or shortener, follow it
-            if 'vplink.in' in destination or 'ohcar' in destination:
-                response2 = requests.get(destination, headers=headers, timeout=20, allow_redirects=True)
-                destination = response2.url
-                logger.info(f"Followed to: {destination}")
+            logger.info(f"[Depth {depth}] Fetching: {url}")
             
-            return destination
-        
-        # Method 2: Look for meta refresh
-        meta_refresh = soup.find('meta', {'http-equiv': 'refresh'})
-        if meta_refresh:
-            content = meta_refresh.get('content', '')
-            match = re.search(r'url=(.+)', content, re.IGNORECASE)
-            if match:
-                destination = match.group(1)
-                logger.info(f"Found destination in meta refresh: {destination}")
-                return destination
-        
-        # Method 3: Look for JavaScript redirects
-        scripts = soup.find_all('script')
-        for script in scripts:
-            if script.string:
-                # Look for window.location or location.href
-                match = re.search(r'(?:window\.location|location\.href)\s*=\s*["\']([^"\']+)["\']', script.string)
-                if match:
-                    destination = match.group(1)
-                    logger.info(f"Found destination in JavaScript: {destination}")
-                    
-                    # If relative URL, make it absolute
-                    if destination.startswith('/'):
-                        parsed = urllib.parse.urlparse(short_url)
+            # Check if this is already a final destination (not a shortener)
+            is_shortener = any(domain in url for domain in shortener_domains)
+            if not is_shortener:
+                logger.info(f"[Depth {depth}] Final destination reached: {url}")
+                return url
+            
+            try:
+                response = requests.get(url, headers=headers, timeout=20, allow_redirects=True)
+                
+                # If we got redirected to a non-shortener, return it
+                if response.url != url and not any(domain in response.url for domain in shortener_domains):
+                    logger.info(f"[Depth {depth}] Redirected to final: {response.url}")
+                    return response.url
+                
+                # Parse the HTML to find the destination URL
+                soup = BeautifulSoup(response.text, 'html.parser')
+                
+                # Method 1: Look for skip button or direct link
+                skip_link = soup.find('a', {'id': 'skip_button'}) or soup.find('a', {'class': 'skip'}) or soup.find('a', string=re.compile('skip|continue|get link', re.IGNORECASE))
+                if skip_link and skip_link.get('href'):
+                    destination = skip_link.get('href')
+                    if not destination.startswith('http'):
+                        parsed = urllib.parse.urlparse(url)
                         destination = f"{parsed.scheme}://{parsed.netloc}{destination}"
-                    
-                    # Follow if it's another shortener
-                    if 'vplink.in' in destination or 'ohcar' in destination:
-                        response2 = requests.get(destination, headers=headers, timeout=20, allow_redirects=True)
-                        destination = response2.url
-                        logger.info(f"Followed to: {destination}")
-                    
-                    return destination
+                    logger.info(f"[Depth {depth}] Found in skip button: {destination}")
+                    return extract_url(destination, depth + 1, max_depth)
+                
+                # Method 2: Look for meta refresh
+                meta_refresh = soup.find('meta', {'http-equiv': 'refresh'})
+                if meta_refresh:
+                    content = meta_refresh.get('content', '')
+                    match = re.search(r'url=(.+)', content, re.IGNORECASE)
+                    if match:
+                        destination = match.group(1).strip('\'"')
+                        logger.info(f"[Depth {depth}] Found in meta refresh: {destination}")
+                        return extract_url(destination, depth + 1, max_depth)
+                
+                # Method 3: Look for JavaScript redirects
+                scripts = soup.find_all('script')
+                for script in scripts:
+                    if script.string:
+                        # Look for various redirect patterns
+                        patterns = [
+                            r'(?:window\.location|location\.href)\s*=\s*["\']([^"\']+)["\']',
+                            r'window\.open\(["\']([^"\']+)["\']',
+                            r'redirect\(["\']([^"\']+)["\']',
+                        ]
+                        
+                        for pattern in patterns:
+                            match = re.search(pattern, script.string)
+                            if match:
+                                destination = match.group(1)
+                                
+                                # Skip self-references
+                                if destination in ['#', 'javascript:void(0)', '']:
+                                    continue
+                                
+                                # Make absolute URL if relative
+                                if destination.startswith('/'):
+                                    parsed = urllib.parse.urlparse(url)
+                                    destination = f"{parsed.scheme}://{parsed.netloc}{destination}"
+                                
+                                logger.info(f"[Depth {depth}] Found in JavaScript: {destination}")
+                                return extract_url(destination, depth + 1, max_depth)
+                
+                # Method 4: Look for any external links (gofile, mediafire, etc.)
+                for link in soup.find_all('a', href=True):
+                    href = link.get('href')
+                    if any(domain in href for domain in ['gofile.io', 'mediafire.com', 'drive.google.com', 'mega.nz']):
+                        logger.info(f"[Depth {depth}] Found destination link: {href}")
+                        return href
+                
+                # If nothing found, return current URL
+                logger.warning(f"[Depth {depth}] No destination found in: {url}")
+                return url
+                
+            except Exception as e:
+                logger.error(f"[Depth {depth}] Error: {e}")
+                return url
         
-        # Method 4: Check if we got redirected already
-        if response.url != short_url and 'vplink.in' not in response.url:
-            logger.info(f"Got redirected to: {response.url}")
-            return response.url
-        
-        logger.error(f"Could not extract destination URL from {short_url}")
-        return None
+        # Start the recursive extraction
+        final_url = extract_url(short_url)
+        logger.info(f"Final destination URL: {final_url}")
+        return final_url
         
     except Exception as e:
         logger.error(f"Error getting destination URL for {short_url}: {e}")
