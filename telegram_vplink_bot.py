@@ -42,24 +42,20 @@ def extract_vplink_urls(text):
 def get_destination_url(short_url, api_key):
     """
     Retrieve the destination URL from vplink short URL using API 1
+    Follow redirects to get the actual destination
     """
     try:
-        # Method 1: Using API (adjust based on vplink documentation)
-        params = {
-            'api': api_key,
-            'url': short_url
-        }
-        response = requests.get(VPLINK_EXPAND_API, params=params, timeout=10)
+        # VPLink doesn't have an expand API, so we follow redirects
+        # Use session to handle redirects properly
+        session = requests.Session()
+        session.max_redirects = 10
         
-        if response.status_code == 200:
-            data = response.json()
-            # Adjust based on actual API response structure
-            return data.get('destination_url') or data.get('url')
+        # Follow all redirects to get the final destination
+        response = session.get(short_url, allow_redirects=True, timeout=15)
+        destination = response.url
         
-        # Method 2: Follow redirects if API doesn't work
-        logger.warning(f"API method failed, trying redirect method for {short_url}")
-        response = requests.get(short_url, allow_redirects=True, timeout=10)
-        return response.url
+        logger.info(f"Expanded {short_url} -> {destination}")
+        return destination
         
     except Exception as e:
         logger.error(f"Error getting destination URL for {short_url}: {e}")
@@ -69,20 +65,24 @@ def get_destination_url(short_url, api_key):
 def create_short_url(destination_url, api_key):
     """
     Create a new vplink short URL using API 2
+    VPLink API format: https://vplink.in/api?api=YOUR_API_KEY&url=DESTINATION_URL
     """
     try:
-        # Adjust based on vplink API documentation
-        params = {
-            'api': api_key,
-            'url': destination_url
-        }
-        response = requests.get(VPLINK_SHORTEN_API, params=params, timeout=10)
+        # VPLink API endpoint
+        api_url = f"https://vplink.in/api?api={api_key}&url={destination_url}"
+        
+        response = requests.get(api_url, timeout=15)
         
         if response.status_code == 200:
             data = response.json()
-            # Adjust based on actual API response structure
-            short_url = data.get('shortenedUrl') or data.get('short_url') or data.get('url')
-            return short_url
+            # VPLink returns: {"status":"success","shortenedUrl":"https://vplink.in/xxxxx"}
+            if data.get('status') == 'success':
+                short_url = data.get('shortenedUrl')
+                logger.info(f"Created short URL: {short_url}")
+                return short_url
+            else:
+                logger.error(f"API returned error: {data}")
+                return None
         else:
             logger.error(f"Failed to create short URL: {response.status_code} - {response.text}")
             return None
