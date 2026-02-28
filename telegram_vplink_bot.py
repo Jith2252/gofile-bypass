@@ -45,14 +45,35 @@ def get_destination_url(short_url, api_key):
     Follow redirects to get the actual destination
     """
     try:
-        # VPLink doesn't have an expand API, so we follow redirects
-        # Use session to handle redirects properly
+        # Use proper headers to bypass anti-bot protection
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.5',
+            'Referer': 'https://google.com/',
+        }
+        
+        # Create session and follow redirects
         session = requests.Session()
         session.max_redirects = 10
         
         # Follow all redirects to get the final destination
-        response = session.get(short_url, allow_redirects=True, timeout=15)
+        response = session.get(short_url, headers=headers, allow_redirects=True, timeout=20)
         destination = response.url
+        
+        # If we're still at vplink, try to extract from response
+        if 'vplink.in' in destination:
+            # Sometimes the redirect happens via JavaScript, check response content
+            import re
+            # Look for window.location or meta refresh
+            match = re.search(r'(?:window\.location|location\.href)\s*=\s*["\']([^"\']+)["\']', response.text)
+            if match:
+                destination = match.group(1)
+            else:
+                # Look for meta refresh
+                match = re.search(r'<meta[^>]+http-equiv=["\']refresh["\'][^>]+content=["\'][^;]+;\s*url=([^"\']+)["\']', response.text, re.IGNORECASE)
+                if match:
+                    destination = match.group(1)
         
         logger.info(f"Expanded {short_url} -> {destination}")
         return destination
@@ -135,8 +156,11 @@ async def handle_channel_message(update: Update, context: ContextTypes.DEFAULT_T
         
         logger.info(f"New short URL: {new_short_url}")
         
-        # Replace old URL with new URL in text
-        new_text = new_text.replace(short_url, new_short_url)
+        # Format the new URL to show without https:// prefix
+        formatted_url = new_short_url.replace('https://', '').replace('http://', '')
+        
+        # Replace old URL with new formatted URL in text
+        new_text = new_text.replace(short_url, formatted_url)
     
     # Post to target channel
     try:
