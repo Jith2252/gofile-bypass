@@ -101,15 +101,40 @@ def get_destination_url(short_url, api_key):
                         logger.info(f"[Depth {depth}] Found in meta refresh: {destination}")
                         return extract_url(destination, depth + 1, max_depth)
                 
-                # Method 3: Look for JavaScript redirects
+                # Method 3: Look for any direct file hosting links (gofile, mediafire, etc.)
+                destination_domains = ['gofile.io', 'mediafire.com', 'drive.google.com', 'mega.nz', 'dropbox.com']
+                for link in soup.find_all('a', href=True):
+                    href = link.get('href')
+                    if any(domain in href for domain in destination_domains):
+                        logger.info(f"[Depth {depth}] Found destination link in anchor: {href}")
+                        return href
+                
+                # Method 4: Look for iframes with destination URLs
+                for iframe in soup.find_all('iframe'):
+                    src = iframe.get('src')
+                    if src:
+                        for domain in destination_domains:
+                            if domain in src:
+                                logger.info(f"[Depth {depth}] Found in iframe: {src}")
+                                return src
+                
+                # Method 5: Look for JavaScript redirects (various patterns)
                 scripts = soup.find_all('script')
                 for script in scripts:
                     if script.string:
-                        # Look for various redirect patterns
+                        # Search for any gofile.io URLs in JavaScript
+                        gofile_match = re.search(r'(["\']https://gofile\.io/d/[A-Za-z0-9]+["\'])', script.string)
+                        if gofile_match:
+                            destination = gofile_match.group(1).strip('\'"')
+                            logger.info(f"[Depth {depth}] Found gofile URL in JavaScript: {destination}")
+                            return destination
+                        
+                        # Look for window.location patterns
                         patterns = [
                             r'(?:window\.location|location\.href)\s*=\s*["\']([^"\']+)["\']',
                             r'window\.open\(["\']([^"\']+)["\']',
                             r'redirect\(["\']([^"\']+)["\']',
+                            r'fetch\(["\']([^"\']+)["\']',
                         ]
                         
                         for pattern in patterns:
@@ -126,17 +151,25 @@ def get_destination_url(short_url, api_key):
                                     parsed = urllib.parse.urlparse(url)
                                     destination = f"{parsed.scheme}://{parsed.netloc}{destination}"
                                 
-                                logger.info(f"[Depth {depth}] Found in JavaScript: {destination}")
+                                logger.info(f"[Depth {depth}] Found in JavaScript pattern: {destination}")
                                 return extract_url(destination, depth + 1, max_depth)
                 
-                # Method 4: Look for any external links (gofile, mediafire, etc.)
-                for link in soup.find_all('a', href=True):
-                    href = link.get('href')
-                    if any(domain in href for domain in ['gofile.io', 'mediafire.com', 'drive.google.com', 'mega.nz']):
-                        logger.info(f"[Depth {depth}] Found destination link: {href}")
-                        return href
+                # Method 6: Look in all text for gofile URLs (last resort)
+                page_text = response.text
+                gofile_urls = re.findall(r'https://gofile\.io/d/[A-Za-z0-9]+', page_text)
+                if gofile_urls:
+                    destination = gofile_urls[0]
+                    logger.info(f"[Depth {depth}] Found gofile URL in page content: {destination}")
+                    return destination
                 
-                # If nothing found, return current URL
+                # Method 7: Look for encoded/escaped URLs
+                escaped_urls = re.findall(r'(https?:\\\/\\\/[^\s\\"]+)', page_text)
+                for escaped_url in escaped_urls:
+                    unescaped = escaped_url.replace('\\/', '/')
+                    if any(domain in unescaped for domain in destination_domains):
+                        logger.info(f"[Depth {depth}] Found escaped URL: {unescaped}")
+                        return extract_url(unescaped, depth + 1, max_depth)
+                
                 logger.warning(f"[Depth {depth}] No destination found in: {url}")
                 return url
                 
