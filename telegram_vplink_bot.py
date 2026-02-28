@@ -7,6 +7,7 @@ import os
 from dotenv import load_dotenv
 from bs4 import BeautifulSoup
 import urllib.parse
+from playwright.sync_api import sync_playwright
 
 # Load environment variables from config.env
 load_dotenv('config.env')
@@ -44,9 +45,83 @@ def extract_vplink_urls(text):
 def get_destination_url(short_url, api_key):
     """
     Retrieve the destination URL from vplink short URL
-    Parse HTML and JavaScript to extract the final destination URL
+    Use headless browser to execute JavaScript and get the redirect
     """
     try:
+        logger.info(f"Fetching destination for: {short_url}")
+        
+        # Use Playwright to load the page and execute JavaScript
+        try:
+            with sync_playwright() as p:
+                browser = p.chromium.launch(headless=True)
+                page = browser.new_page()
+                
+                logger.info(f"[Playwright] Loading page: {short_url}")
+                page.goto(short_url, wait_until="networkidle", timeout=30000)
+                
+                # Wait a bit for any redirects
+                page.wait_for_timeout(2000)
+                
+                # Get the final URL after all redirects
+                final_url = page.url
+                logger.info(f"[Playwright] Final URL after redirect: {final_url}")
+                
+                # If we got redirected to a file host, return it
+                if any(domain in final_url for domain in ['gofile.io', 'mediafire.com', 'mega.nz', 'dropbox.com', 'drive.google.com']):
+                    browser.close()
+                    logger.info(f"Got destination: {final_url}")
+                    return final_url
+                
+                # Get page content to search for URLs
+                content = page.content()
+                browser.close()
+                
+                logger.info(f"[Playwright] Page loaded, searching for destination URL")
+                
+                # Look for gofile URLs in the content
+                gofile_patterns = [
+                    r'https://gofile\.io/d/[A-Za-z0-9]+',
+                    r'["\']https://gofile\.io/d/[A-Za-z0-9]+["\']',
+                ]
+                
+                for pattern in gofile_patterns:
+                    urls = re.findall(pattern, content)
+                    if urls:
+                        destination = urls[0].strip('\'"')
+                        logger.info(f"Found gofile URL in Playwright content: {destination}")
+                        return destination
+                
+                # If still on a shortener, extract the redirect URL
+                if 'ohcar' in final_url or 'vplink.in' in final_url:
+                    logger.info(f"Still on shortener: {final_url}, searching for next redirect")
+                    
+                    # Look for any URLs in content
+                    urls = re.findall(r'https://[^\s\'"<>]+', content)
+                    if urls:
+                        # Filter for most likely destination
+                        for url in urls:
+                            if not any(domain in url for domain in ['cdn', 'google', 'cloudflare', 'telegram']):
+                                if 'gofile' in url or 'ohcar' in url or 'mediafire' in url:
+                                    logger.info(f"Found URL in content: {url}")
+                                    # Recursively follow if it's another shortener
+                                    if any(domain in url for domain in ['ohcar', 'vplink.in']):
+                                        return get_destination_url(url, api_key)
+                                    return url
+                
+                logger.warning(f"Could not find destination in: {final_url}")
+                return final_url
+                
+        except Exception as e:
+            logger.error(f"Playwright error: {e}")
+            # Fallback to requests
+            logger.info(f"Falling back to requests for: {short_url}")
+            response = requests.get(short_url, allow_redirects=True, timeout=20)
+            logger.info(f"Final URL: {response.url}")
+            return response.url
+        
+    except Exception as e:
+        logger.error(f"Error getting destination URL for {short_url}: {e}")
+        return None
         logger.info(f"Fetching destination for: {short_url}")
         
         headers = {
