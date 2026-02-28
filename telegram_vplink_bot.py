@@ -5,6 +5,8 @@ from telegram.ext import Application, MessageHandler, filters, ContextTypes
 import logging
 import os
 from dotenv import load_dotenv
+from bs4 import BeautifulSoup
+import urllib.parse
 
 # Load environment variables from config.env
 load_dotenv('config.env')
@@ -41,59 +43,76 @@ def extract_vplink_urls(text):
 
 def get_destination_url(short_url, api_key):
     """
-    Retrieve the destination URL from vplink short URL using API 1
-    Follow ALL redirects through multiple shorteners until we reach the actual destination (Gofile)
+    Retrieve the destination URL from vplink short URL
+    VPLink pages contain the destination URL in the HTML, need to parse it
     """
     try:
-        # Use proper headers to bypass anti-bot protection
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
             'Accept-Language': 'en-US,en;q=0.5',
-            'Referer': 'https://google.com/',
         }
         
-        current_url = short_url
-        max_redirects = 20  # Allow more redirects to go through multiple shorteners
-        redirect_count = 0
+        logger.info(f"Fetching vplink page: {short_url}")
+        response = requests.get(short_url, headers=headers, timeout=20, allow_redirects=True)
         
-        # List of known shortener domains to keep following
-        shortener_domains = ['vplink.in', 'ohcar2022.co.in', 'bit.ly', 'tinyurl.com', 'shorturl.at']
+        # Parse the HTML to find the destination URL
+        soup = BeautifulSoup(response.text, 'html.parser')
         
-        logger.info(f"Starting redirect chain from: {short_url}")
-        
-        while redirect_count < max_redirects:
-            session = requests.Session()
-            session.max_redirects = 1  # Handle redirects manually
+        # Method 1: Look for skip button or direct link
+        skip_link = soup.find('a', {'id': 'skip_button'}) or soup.find('a', {'class': 'skip'})
+        if skip_link and skip_link.get('href'):
+            destination = skip_link.get('href')
+            logger.info(f"Found destination in skip button: {destination}")
             
-            try:
-                response = session.get(current_url, headers=headers, allow_redirects=True, timeout=20)
-                destination = response.url
-                
-                logger.info(f"Redirect #{redirect_count + 1}: {current_url} -> {destination}")
-                
-                # Check if we've reached the final destination (not a shortener)
-                is_shortener = any(domain in destination for domain in shortener_domains)
-                
-                if destination == current_url or not is_shortener:
-                    # We've reached the final URL or it's not changing
-                    logger.info(f"Final destination: {destination}")
-                    return destination
-                
-                # Continue with the next URL in the chain
-                current_url = destination
-                redirect_count += 1
-                
-            except requests.RequestException as e:
-                logger.error(f"Error at redirect #{redirect_count + 1}: {e}")
-                if redirect_count > 0:
-                    # Return the last successful URL
-                    return current_url
-                return None
+            # If it's another vplink or shortener, follow it
+            if 'vplink.in' in destination or 'ohcar' in destination:
+                response2 = requests.get(destination, headers=headers, timeout=20, allow_redirects=True)
+                destination = response2.url
+                logger.info(f"Followed to: {destination}")
+            
+            return destination
         
-        # If we hit max redirects, return what we have
-        logger.warning(f"Hit max redirects ({max_redirects}), returning: {current_url}")
-        return current_url
+        # Method 2: Look for meta refresh
+        meta_refresh = soup.find('meta', {'http-equiv': 'refresh'})
+        if meta_refresh:
+            content = meta_refresh.get('content', '')
+            match = re.search(r'url=(.+)', content, re.IGNORECASE)
+            if match:
+                destination = match.group(1)
+                logger.info(f"Found destination in meta refresh: {destination}")
+                return destination
+        
+        # Method 3: Look for JavaScript redirects
+        scripts = soup.find_all('script')
+        for script in scripts:
+            if script.string:
+                # Look for window.location or location.href
+                match = re.search(r'(?:window\.location|location\.href)\s*=\s*["\']([^"\']+)["\']', script.string)
+                if match:
+                    destination = match.group(1)
+                    logger.info(f"Found destination in JavaScript: {destination}")
+                    
+                    # If relative URL, make it absolute
+                    if destination.startswith('/'):
+                        parsed = urllib.parse.urlparse(short_url)
+                        destination = f"{parsed.scheme}://{parsed.netloc}{destination}"
+                    
+                    # Follow if it's another shortener
+                    if 'vplink.in' in destination or 'ohcar' in destination:
+                        response2 = requests.get(destination, headers=headers, timeout=20, allow_redirects=True)
+                        destination = response2.url
+                        logger.info(f"Followed to: {destination}")
+                    
+                    return destination
+        
+        # Method 4: Check if we got redirected already
+        if response.url != short_url and 'vplink.in' not in response.url:
+            logger.info(f"Got redirected to: {response.url}")
+            return response.url
+        
+        logger.error(f"Could not extract destination URL from {short_url}")
+        return None
         
     except Exception as e:
         logger.error(f"Error getting destination URL for {short_url}: {e}")
