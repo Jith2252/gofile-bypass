@@ -43,54 +43,11 @@ def extract_vplink_urls(text):
 
 def get_destination_url(short_url, api_key):
     """
-    Retrieve the destination URL from vplink short URL using VPLink API 1
-    If API fails, fallback to HTML parsing
+    Retrieve the destination URL from vplink short URL
+    Parse HTML and JavaScript to extract the final destination URL
     """
     try:
-        logger.info(f"Attempting to get destination URL for: {short_url} using API")
-        
-        # Extract the short code from URL (e.g., A8ne5 from https://vplink.in/A8ne5)
-        short_code = short_url.split('/')[-1]
-        
-        # Try multiple API endpoints to expand the URL
-        api_endpoints = [
-            f"https://vplink.in/api?api={api_key}&url={short_url}",
-            f"https://vplink.in/api?api={api_key}&url=vplink.in/{short_code}",
-        ]
-        
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        }
-        
-        for endpoint in api_endpoints:
-            try:
-                logger.info(f"Trying API endpoint: {endpoint}")
-                response = requests.get(endpoint, headers=headers, timeout=10)
-                
-                if response.status_code == 200:
-                    try:
-                        data = response.json()
-                        logger.info(f"API Response: {data}")
-                        
-                        # Check if we got a destination URL
-                        if data.get('status') == 'success':
-                            # API might return the shortened URL, try to extract or use shortenedUrl field
-                            dest = data.get('destination') or data.get('destinationUrl') or data.get('longUrl')
-                            if dest:
-                                logger.info(f"Got destination from API: {dest}")
-                                return dest
-                    except:
-                        # Response might be plain text
-                        if response.text and 'https://' in response.text:
-                            dest = response.text.strip()
-                            logger.info(f"Got destination from API (text): {dest}")
-                            return dest
-            except Exception as e:
-                logger.warning(f"API endpoint failed: {e}")
-                continue
-        
-        # Fallback: Parse HTML page to find destination
-        logger.info(f"API failed, falling back to HTML parsing for: {short_url}")
+        logger.info(f"Fetching destination for: {short_url}")
         
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -146,6 +103,14 @@ def get_destination_url(short_url, api_key):
                         logger.info(f"[Depth {depth}] Found in meta refresh: {destination}")
                         return extract_url(destination, depth + 1, max_depth)
                 
+                # Method 2.5: Check for HTML comments with URLs
+                for comment in soup.find_all(string=lambda text: isinstance(text, str) and '<!--' in str(text)):
+                    if 'gofile' in str(comment).lower():
+                        urls = re.findall(r'https://gofile\.io/d/[A-Za-z0-9]+', str(comment))
+                        if urls:
+                            logger.info(f"[Depth {depth}] Found in HTML comment: {urls[0]}")
+                            return urls[0]
+                
                 # Method 3: Look for any direct file hosting links (gofile, mediafire, etc.)
                 destination_domains = ['gofile.io', 'mediafire.com', 'drive.google.com', 'mega.nz', 'dropbox.com']
                 for link in soup.find_all('a', href=True):
@@ -191,13 +156,23 @@ def get_destination_url(short_url, api_key):
                                 if destination in ['#', 'javascript:void(0)', '']:
                                     continue
                                 
-                                # Make absolute URL if relative
-                                if destination.startswith('/'):
-                                    parsed = urllib.parse.urlparse(url)
-                                    destination = f"{parsed.scheme}://{parsed.netloc}{destination}"
-                                
-                                logger.info(f"[Depth {depth}] Found in JavaScript pattern: {destination}")
-                                return extract_url(destination, depth + 1, max_depth)
+                                # Make absolute URL if relativincluding in quotes, brackets, etc.)
+                page_text = response.text
+                
+                # Look for gofile URLs in various formats
+                gofile_patterns = [
+                    r'https://gofile\.io/d/[A-Za-z0-9]+',  # Direct URL
+                    r'["\']https://gofile\.io/d/[A-Za-z0-9]+["\']',  # In quotes
+                    r'\(https://gofile\.io/d/[A-Za-z0-9]+\)',  # In parentheses
+                    r'\[https://gofile\.io/d/[A-Za-z0-9]+\]',  # In brackets
+                ]
+                
+                for pattern in gofile_patterns:
+                    gofile_urls = re.findall(pattern, page_text)
+                    if gofile_urls:
+                        destination = gofile_urls[0].strip('\'"()[]')
+                        logger.info(f"[Depth {depth}] Found gofile URL in page content: {destination}")
+                                    return extract_url(destination, depth + 1, max_depth)
                 
                 # Method 6: Look in all text for gofile URLs (last resort)
                 page_text = response.text
