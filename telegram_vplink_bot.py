@@ -172,7 +172,7 @@ def get_destination_url(short_url, api_key):
                     if gofile_urls:
                         destination = gofile_urls[0].strip('\'"()[]')
                         logger.info(f"[Depth {depth}] Found gofile URL in page content: {destination}")
-                                    return extract_url(destination, depth + 1, max_depth)
+                        return extract_url(destination, depth + 1, max_depth)
                 
                 # Method 6: Look in all text for gofile URLs (last resort)
                 page_text = response.text
