@@ -43,10 +43,55 @@ def extract_vplink_urls(text):
 
 def get_destination_url(short_url, api_key):
     """
-    Retrieve the destination URL from vplink short URL
-    Recursively follow through ALL shortener pages until reaching the final destination
+    Retrieve the destination URL from vplink short URL using VPLink API 1
+    If API fails, fallback to HTML parsing
     """
     try:
+        logger.info(f"Attempting to get destination URL for: {short_url} using API")
+        
+        # Extract the short code from URL (e.g., A8ne5 from https://vplink.in/A8ne5)
+        short_code = short_url.split('/')[-1]
+        
+        # Try multiple API endpoints to expand the URL
+        api_endpoints = [
+            f"https://vplink.in/api?api={api_key}&url={short_url}",
+            f"https://vplink.in/api?api={api_key}&url=vplink.in/{short_code}",
+        ]
+        
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        }
+        
+        for endpoint in api_endpoints:
+            try:
+                logger.info(f"Trying API endpoint: {endpoint}")
+                response = requests.get(endpoint, headers=headers, timeout=10)
+                
+                if response.status_code == 200:
+                    try:
+                        data = response.json()
+                        logger.info(f"API Response: {data}")
+                        
+                        # Check if we got a destination URL
+                        if data.get('status') == 'success':
+                            # API might return the shortened URL, try to extract or use shortenedUrl field
+                            dest = data.get('destination') or data.get('destinationUrl') or data.get('longUrl')
+                            if dest:
+                                logger.info(f"Got destination from API: {dest}")
+                                return dest
+                    except:
+                        # Response might be plain text
+                        if response.text and 'https://' in response.text:
+                            dest = response.text.strip()
+                            logger.info(f"Got destination from API (text): {dest}")
+                            return dest
+            except Exception as e:
+                logger.warning(f"API endpoint failed: {e}")
+                continue
+        
+        # Fallback: Parse HTML page to find destination
+        logger.info(f"API failed, falling back to HTML parsing for: {short_url}")
+        
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
