@@ -42,7 +42,7 @@ def extract_vplink_urls(text):
 def get_destination_url(short_url, api_key):
     """
     Retrieve the destination URL from vplink short URL using API 1
-    Follow redirects to get the actual destination
+    Follow ALL redirects through multiple shorteners until we reach the actual destination (Gofile)
     """
     try:
         # Use proper headers to bypass anti-bot protection
@@ -53,30 +53,47 @@ def get_destination_url(short_url, api_key):
             'Referer': 'https://google.com/',
         }
         
-        # Create session and follow redirects
-        session = requests.Session()
-        session.max_redirects = 10
+        current_url = short_url
+        max_redirects = 20  # Allow more redirects to go through multiple shorteners
+        redirect_count = 0
         
-        # Follow all redirects to get the final destination
-        response = session.get(short_url, headers=headers, allow_redirects=True, timeout=20)
-        destination = response.url
+        # List of known shortener domains to keep following
+        shortener_domains = ['vplink.in', 'ohcar2022.co.in', 'bit.ly', 'tinyurl.com', 'shorturl.at']
         
-        # If we're still at vplink, try to extract from response
-        if 'vplink.in' in destination:
-            # Sometimes the redirect happens via JavaScript, check response content
-            import re
-            # Look for window.location or meta refresh
-            match = re.search(r'(?:window\.location|location\.href)\s*=\s*["\']([^"\']+)["\']', response.text)
-            if match:
-                destination = match.group(1)
-            else:
-                # Look for meta refresh
-                match = re.search(r'<meta[^>]+http-equiv=["\']refresh["\'][^>]+content=["\'][^;]+;\s*url=([^"\']+)["\']', response.text, re.IGNORECASE)
-                if match:
-                    destination = match.group(1)
+        logger.info(f"Starting redirect chain from: {short_url}")
         
-        logger.info(f"Expanded {short_url} -> {destination}")
-        return destination
+        while redirect_count < max_redirects:
+            session = requests.Session()
+            session.max_redirects = 1  # Handle redirects manually
+            
+            try:
+                response = session.get(current_url, headers=headers, allow_redirects=True, timeout=20)
+                destination = response.url
+                
+                logger.info(f"Redirect #{redirect_count + 1}: {current_url} -> {destination}")
+                
+                # Check if we've reached the final destination (not a shortener)
+                is_shortener = any(domain in destination for domain in shortener_domains)
+                
+                if destination == current_url or not is_shortener:
+                    # We've reached the final URL or it's not changing
+                    logger.info(f"Final destination: {destination}")
+                    return destination
+                
+                # Continue with the next URL in the chain
+                current_url = destination
+                redirect_count += 1
+                
+            except requests.RequestException as e:
+                logger.error(f"Error at redirect #{redirect_count + 1}: {e}")
+                if redirect_count > 0:
+                    # Return the last successful URL
+                    return current_url
+                return None
+        
+        # If we hit max redirects, return what we have
+        logger.warning(f"Hit max redirects ({max_redirects}), returning: {current_url}")
+        return current_url
         
     except Exception as e:
         logger.error(f"Error getting destination URL for {short_url}: {e}")
